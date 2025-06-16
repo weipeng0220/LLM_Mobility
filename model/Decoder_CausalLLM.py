@@ -21,12 +21,14 @@ DEFAULT_END_TOKEN = "<END>"
 
 
 class DecoderLlamaForCausalLM(LlamaForCausalLM):
-    def __init__(self, config, tokenizer):
+    def __init__(self, config):
         super(DecoderLlamaForCausalLM, self).__init__(config)
         self.config = config
         self.linear_projection = nn.Linear(config.z_latent_size, config.hidden_size)
-        self.tokenizer = tokenizer
         self.prompt = prompt()
+
+    def get_tokenizer(self,tokenizer):
+        self.tokenizer = tokenizer
         self.initialize_tokenizer_and_embedding_resize()
 
     def forward(self, Z_hidden, home_loc_ids, traj_target):     # [batch_size,z_hidden_size], [batch_size, 1], [batch_size, 24]

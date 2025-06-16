@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class VAE_CausalLLM(nn.Module):
-    def __init__(self, config,params,tokenizer):
+    def __init__(self, params, decoder):
         super(VAE_CausalLLM, self).__init__()
         self.parmas = params
         self.device=params.device
         self.encoder=VAE_Encoder(params)
-        self.deocder=DecoderLlamaForCausalLM(config,tokenizer)
+        self.deocder=decoder
         self.zxpo_mu=nn.Sequential(
             nn.Linear(params.z_hidden_size,512),
             nn.ReLU(),
