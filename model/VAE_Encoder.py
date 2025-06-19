@@ -39,7 +39,7 @@ class VAE_Encoder(nn.Module):
             d_model=self.params.embedding_dim,
             nhead=self.params.head_num,
             dim_feedforward=self.params.dim_forward,
-            dropout=self.params.dropout,
+            dropout=self.params.drop_out,
             batch_first=True
         )
 
@@ -49,8 +49,9 @@ class VAE_Encoder(nn.Module):
         )
 
         self.to_latent = nn.Linear(
-            self.params.embedding_dim,
-            self.params.z_hidden_size
+            self.params.embedding_dim*2,
+            self.params.z_hidden_size,
+            dtype=torch.float32
         )
 
     def forward(self, trajectory, home_location):
@@ -70,7 +71,7 @@ class VAE_Encoder(nn.Module):
 
         # Positional encoding for the trajectory embeddings
         pos_encoder = PositionEncoder(
-            self.params.embedding_dim, self.dropout, self.traj_length
+            self.params.embedding_dim, self.params.drop_out, self.params.traj_length
         ).to(self.device)
         encoded_input = pos_encoder(traj_embed)
 

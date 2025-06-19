@@ -98,6 +98,7 @@ def forward_flashattn_inference(
         output_attentions: bool = False,
         use_cache: bool = False,
         padding_mask: Optional[torch.Tensor] = None,
+        **kwargs
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if output_attentions:
         warnings.warn(
@@ -105,12 +106,12 @@ def forward_flashattn_inference(
         )
 
     bsz, q_len, _ = hidden_states.size()
-    kv_heads = getattr(self, "num_key_value_heads", self.num_heads)
+    kv_heads = getattr(self, "num_key_value_heads", self.config.num_attention_heads)
 
     q, k, v = (
         op(hidden_states).view(bsz, q_len, nh, self.head_dim)
         for op, nh in (
-        (self.q_proj, self.num_heads),
+        (self.q_proj, self.config.num_attention_heads),
         (self.k_proj, kv_heads),
         (self.v_proj, kv_heads),
     )
@@ -157,7 +158,7 @@ def forward_flashattn_inference(
             softmax_scale=None,
             causal=True,
         )
-        output_unpad = output_unpad.reshape(-1, self.num_heads * self.head_dim)
+        output_unpad = output_unpad.reshape(-1, self.config.num_attention_heads * self.head_dim)
         output = pad_input(output_unpad, indices, bsz, q_len)
 
     return self.o_proj(output), None, past_key_value
@@ -178,12 +179,16 @@ def forward_flashattn_full(
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
         padding_mask: Optional[torch.LongTensor] = None,
+        **kwargs
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     """Input shape: Batch x Time x Channel
 
     attention_mask: [bsz, q_len]
     """
+    # 使用 getattr 来兼容不同版本的 transformers
+
     if output_attentions:
         warnings.warn(
             "Output attentions is not supported for patched `LlamaAttention`, returning `None` instead."
@@ -193,17 +198,17 @@ def forward_flashattn_full(
 
     query_states = (
         self.q_proj(hidden_states)
-        .view(bsz, q_len, self.num_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_attention_heads, self.head_dim)
         .transpose(1, 2)
     )
     key_states = (
         self.k_proj(hidden_states)
-        .view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_key_value_heads, self.head_dim)
         .transpose(1, 2)
     )
     value_states = (
         self.v_proj(hidden_states)
-        .view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_key_value_heads, self.head_dim)
         .transpose(1, 2)
     )
     # [bsz, q_len, nh, hd]
@@ -258,7 +263,7 @@ def forward_flashattn_full(
         "b s (h d) -> b s h d",
         h=nheads,
     )
-    output = output.reshape(bsz, q_len, self.num_heads, self.head_dim)
+    output = output.reshape(bsz, q_len, self.config.num_attention_heads, self.head_dim)
 
     return self.o_proj(rearrange(output, "b s h d -> b s (h d)")), None, past_key_value
 
@@ -271,12 +276,19 @@ def forward_flashattn(
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
         padding_mask: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[torch.Tensor] = None,
+        **kwargs
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     """Input shape: Batch x Time x Channel
 
     attention_mask: [bsz, q_len]
     """
+    # print("All attributes:", [attr for attr in dir(self) if not attr.startswith('_')])
+    # print("Config attributes:", [attr for attr in dir(self.config) if not attr.startswith('_')])
+    # exit()
+
     if not self.training:
         raise ValueError("This function is only for training. For inference, please use forward_flashattn_inference.")
 
@@ -289,17 +301,17 @@ def forward_flashattn(
 
     query_states = (
         self.q_proj(hidden_states)
-        .view(bsz, q_len, self.num_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_attention_heads, self.head_dim)
         .transpose(1, 2)
     )
     key_states = (
         self.k_proj(hidden_states)
-        .view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_key_value_heads, self.head_dim)
         .transpose(1, 2)
     )
     value_states = (
         self.v_proj(hidden_states)
-        .view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+        .view(bsz, q_len, self.config.num_key_value_heads, self.head_dim)
         .transpose(1, 2)
     )
     # [bsz, q_len, nh, hd]
@@ -346,9 +358,9 @@ def forward_flashattn(
     else:
         group_size = sft_group_size
 
-    qkv = qkv.reshape(bsz, q_len, 3, 2, self.num_heads // 2, self.head_dim).permute(0, 3, 1, 2, 4, 5).reshape(bsz * 2,
+    qkv = qkv.reshape(bsz, q_len, 3, 2, self.config.num_attention_heads // 2, self.head_dim).permute(0, 3, 1, 2, 4, 5).reshape(bsz * 2,
                                                                                                               q_len, 3,
-                                                                                                              self.num_heads // 2,
+                                                                                                              self.config.num_attention_heads // 2,
                                                                                                               self.head_dim)
 
     x = rearrange(qkv, "b s three h d -> b s (three h d)")
@@ -388,6 +400,7 @@ def forward_noflashattn(
         use_cache: bool = False,
         padding_mask: Optional[torch.LongTensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+
     bsz, q_len, _ = hidden_states.size()
 
     group_size = int(q_len * group_size_ratio)
@@ -397,9 +410,9 @@ def forward_noflashattn(
     num_group = q_len // group_size
 
     if self.config.pretraining_tp > 1:
-        key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
+        key_value_slicing = (self.config.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
         query_slices = self.q_proj.weight.split(
-            (self.num_heads * self.head_dim) // self.config.pretraining_tp, dim=0
+            (self.config.num_attention_heads * self.head_dim) // self.config.pretraining_tp, dim=0
         )
         key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
         value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
@@ -418,9 +431,9 @@ def forward_noflashattn(
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    query_states = query_states.view(bsz, q_len, self.config.num_attention_heads, self.head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.config.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.config.num_key_value_heads, self.head_dim).transpose(1, 2)
 
     kv_seq_len = key_states.shape[-2]
     if past_key_value is not None:
@@ -445,15 +458,15 @@ def forward_noflashattn(
         qkv = qkv.transpose(1, 2).reshape(bsz * (q_len // group_size), group_size, num_heads, head_dim).transpose(1, 2)
         return qkv
 
-    query_states = shift(query_states, bsz, q_len, group_size, self.num_heads, self.head_dim)
-    key_states = shift(key_states, bsz, q_len, group_size, self.num_heads, self.head_dim)
-    value_states = shift(value_states, bsz, q_len, group_size, self.num_heads, self.head_dim)
+    query_states = shift(query_states, bsz, q_len, group_size, self.config.num_attention_heads, self.head_dim)
+    key_states = shift(key_states, bsz, q_len, group_size, self.config.num_attention_heads, self.head_dim)
+    value_states = shift(value_states, bsz, q_len, group_size, self.config.num_attention_heads, self.head_dim)
 
     attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-    if attn_weights.size() != (bsz * num_group, self.num_heads, group_size, group_size):
+    if attn_weights.size() != (bsz * num_group, self.config.num_attention_heads, group_size, group_size):
         raise ValueError(
-            f"Attention weights should be of size {(bsz * num_group, self.num_heads, group_size, group_size)}, but is"
+            f"Attention weights should be of size {(bsz * num_group, self.config.num_attention_heads, group_size, group_size)}, but is"
             f" {attn_weights.size()}"
         )
 
@@ -469,17 +482,17 @@ def forward_noflashattn(
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
     attn_output = torch.matmul(attn_weights, value_states)
 
-    if attn_output.size() != (bsz * num_group, self.num_heads, group_size, self.head_dim):
+    if attn_output.size() != (bsz * num_group, self.config.num_attention_heads, group_size, self.head_dim):
         raise ValueError(
-            f"`attn_output` should be of size {(bsz * num_group, self.num_heads, group_size, self.head_dim)}, but is"
+            f"`attn_output` should be of size {(bsz * num_group, self.config.num_attention_heads, group_size, self.head_dim)}, but is"
             f" {attn_output.size()}"
         )
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads, self.head_dim)
+    attn_output = attn_output.reshape(bsz, q_len, self.config.num_attention_heads, self.head_dim)
 
     # shift back
-    attn_output[:, :, self.num_heads // 2:] = attn_output[:, :, self.num_heads // 2:].roll(group_size // 2, dims=1)
+    attn_output[:, :, self.config.num_attention_heads // 2:] = attn_output[:, :, self.config.num_attention_heads // 2:].roll(group_size // 2, dims=1)
 
     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
